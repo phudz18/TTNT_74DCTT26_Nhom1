@@ -1,0 +1,300 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from tabulate import tabulate
+import json
+
+# ----------------
+# TSP Data
+# ----------------
+n_cities = 20
+np.random.seed(42)
+cities = np.random.rand(n_cities, 2) * 100
+dist_matrix = np.linalg.norm(cities[:, np.newaxis] - cities, axis=2)
+
+def tour_length(tour):
+    """Calculate the total length of a tour."""
+    return sum(dist_matrix[tour[i], tour[(i+1)%n_cities]] for i in range(n_cities))
+
+def validate_tour(tour, n_cities):
+    """Validate that a tour contains unique indices from 0 to n_cities - 1."""
+    return (isinstance(tour, (list, np.ndarray)) and len(tour) == n_cities and
+            all(isinstance(i, (int, np.integer)) for i in tour) and
+            set(tour) == set(range(n_cities)))
+
+# ----------------
+# Ant Colony Optimization (ACO)
+# ----------------
+def ant_colony_optimization(n_ants=30, n_iter=500, alpha=1, beta=5, rho=0.5, q=100, early_stop=20):
+    """Run ACO for TSP. Returns best tour, length, and convergence history."""
+    pheromone = np.ones((n_cities, n_cities))
+    best_tour = None
+    best_length = np.inf
+    history = []
+    stagnant_count = 0
+    prev_best = np.inf
+
+    for iteration in range(n_iter):
+        all_tours = []
+        all_lengths = []
+        for ant in range(n_ants):
+            visited = [np.random.randint(n_cities)]
+            while len(visited) < n_cities:
+                current = visited[-1]
+                probs = []
+                for j in range(n_cities):
+                    if j not in visited:
+                        tau = pheromone[current, j] ** alpha
+                        eta = (1.0 / (dist_matrix[current, j] + 1e-10)) ** beta
+                        probs.append((j, tau * eta))
+                probs = np.array(probs)
+                if len(probs) == 0:
+                    break
+                total = np.sum(probs[:, 1])
+                r = np.random.rand() * total
+                s = 0
+                for idx, p in enumerate(probs):
+                    s += p[1]
+                    if s >= r:
+                        visited.append(int(p[0]))
+                        break
+            if not validate_tour(visited, n_cities):
+                print(f"ACO: Invalid tour in iteration {iteration}, ant {ant}: {visited}")
+                visited = np.random.permutation(n_cities).tolist()
+            length = tour_length(visited)
+            all_tours.append(visited)
+            all_lengths.append(length)
+            if length < best_length:
+                best_tour, best_length = visited.copy(), length
+        pheromone *= (1 - rho)
+        for t, l in zip(all_tours, all_lengths):
+            for i in range(n_cities):
+                pheromone[t[i], t[(i+1)%n_cities]] += q / l
+        history.append(best_length)
+        if abs(best_length - prev_best) < 1e-3:
+            stagnant_count += 1
+        else:
+            stagnant_count = 0
+        if stagnant_count >= early_stop:
+            print(f"ACO: Early stopping at iteration {iteration}")
+            break
+        prev_best = best_length
+    if not validate_tour(best_tour, n_cities):
+        print(f"ACO: Invalid final best tour: {best_tour}")
+        best_tour = np.random.permutation(n_cities).tolist()
+        best_length = tour_length(best_tour)
+    return best_tour, best_length, history
+
+# ----------------
+# Seagull Optimization Algorithm (SOA)
+# ----------------
+def soa(n_seagulls=30, n_iter=500, early_stop=20):
+    """Run SOA for TSP. Returns best tour, length, and convergence history."""
+    population = [np.random.permutation(n_cities).tolist() for _ in range(n_seagulls)]
+    best_tour = min(population, key=tour_length)
+    best_length = tour_length(best_tour)
+    history = [best_length]
+    stagnant_count = 0
+    prev_best = np.inf
+
+    for iter_ in range(n_iter):
+        new_population = []
+        for i in range(n_seagulls):
+            candidate = population[i].copy()
+            if np.random.rand() < 0.5:
+                a, b = np.random.choice(n_cities, 2, replace=False)
+                candidate[a], candidate[b] = candidate[b], candidate[a]
+            if np.random.rand() < 0.5:
+                a, b = sorted(np.random.choice(n_cities, 2, replace=False))
+                candidate[a:b] = candidate[a:b][::-1]
+            if not validate_tour(candidate, n_cities):
+                print(f"SOA: Invalid candidate in iteration {iter_}, seagull {i}: {candidate}")
+                new_population.append(population[i])
+            else:
+                if tour_length(candidate) < tour_length(population[i]):
+                    new_population.append(candidate)
+                else:
+                    new_population.append(population[i])
+        population = new_population
+        cur_best = min(population, key=tour_length)
+        cur_best_length = tour_length(cur_best)
+        if cur_best_length < best_length:
+            best_tour, best_length = cur_best.copy(), cur_best_length
+        history.append(best_length)
+        if abs(best_length - prev_best) < 1e-3:
+            stagnant_count += 1
+        else:
+            stagnant_count = 0
+        if stagnant_count >= early_stop:
+            print(f"SOA: Early stopping at iteration {iter_}")
+            break
+        prev_best = best_length
+    if not validate_tour(best_tour, n_cities):
+        print(f"SOA: Invalid final best tour: {best_tour}")
+        best_tour = np.random.permutation(n_cities).tolist()
+        best_length = tour_length(best_tour)
+    return list(best_tour), best_length, history
+
+# ----------------
+# Genetic Algorithm (GA) for TSP
+# ----------------
+def ga_tsp(n_pop=50, n_iter=500, elite=5, mutation_rate=0.4, early_stop=30):
+    def crossover_ox(p1, p2):
+        """Order Crossover (OX)"""
+        start, end = sorted(np.random.choice(n_cities, 2, replace=False))
+        child = [-1] * n_cities
+        child[start:end] = p1[start:end]
+        fill = [city for city in p2 if city not in child]
+        idx = 0
+        for i in range(n_cities):
+            if child[i] == -1:
+                child[i] = fill[idx]
+                idx += 1
+        return child
+
+    def mutate(tour):
+        """Mutation: đảo ngược đoạn hoặc hoán vị cặp"""
+        if np.random.rand() < 0.5:
+            a, b = sorted(np.random.choice(n_cities, 2, replace=False))
+            tour[a:b] = tour[a:b][::-1]
+        else:
+            a, b = np.random.choice(n_cities, 2, replace=False)
+            tour[a], tour[b] = tour[b], tour[a]
+        return tour
+
+    # Khởi tạo
+    population = [np.random.permutation(n_cities).tolist() for _ in range(n_pop)]
+    best_tour = min(population, key=tour_length)
+    best_length = tour_length(best_tour)
+    history = [best_length]
+    stagnant_count = 0
+    prev_best = np.inf
+
+    for it in range(n_iter):
+        fitness = np.array([1.0 / (tour_length(ind) + 1e-8) for ind in population])
+        idx_sorted = np.argsort([tour_length(ind) for ind in population])
+        new_population = [population[i].copy() for i in idx_sorted[:elite]]
+
+        while len(new_population) < n_pop:
+            probs = fitness / np.sum(fitness)
+            p1, p2 = np.random.choice(n_pop, 2, p=probs, replace=False)
+            child = crossover_ox(population[p1], population[p2])
+            if np.random.rand() < mutation_rate:
+                child = mutate(child)
+            if not validate_tour(child, n_cities):
+                child = np.random.permutation(n_cities).tolist()
+            new_population.append(child)
+
+        population = new_population
+        cur_best = min(population, key=tour_length)
+        cur_best_length = tour_length(cur_best)
+        if cur_best_length < best_length:
+            best_tour, best_length = cur_best.copy(), cur_best_length
+        history.append(best_length)
+
+        if abs(best_length - prev_best) < 1e-3:
+            stagnant_count += 1
+        else:
+            stagnant_count = 0
+        if stagnant_count >= early_stop:
+            print(f"Improved GA: Early stopping at iteration {it}")
+            break
+        prev_best = best_length
+
+    return best_tour, best_length, history
+
+
+# ----------------
+# Run algorithms
+# ----------------
+aco_tour, aco_length, aco_history = ant_colony_optimization()
+soa_tour, soa_length, soa_history = soa()
+ga_tour, ga_length, ga_history = ga_tsp()
+
+# Hiển thị kết quả tối ưu
+results = [
+    ["ACO", aco_length],
+    ["SOA", soa_length],
+    ["GA", ga_length]
+]
+print(tabulate(results, headers=["Thuật toán", "Chiều dài đường đi tối ưu"], tablefmt="grid", floatfmt=".4f"))
+
+plt.figure(figsize=(8, 6))
+plt.plot(cities[aco_tour + [aco_tour[0]], 0], cities[aco_tour + [aco_tour[0]], 1], 'r-o', label=f'ACO (Length: {aco_length:.1f})')
+plt.plot(cities[soa_tour + [soa_tour[0]], 0], cities[soa_tour + [soa_tour[0]], 1], 'b--o', label=f'SOA (Length: {soa_length:.1f})')
+plt.scatter(cities[:,0], cities[:,1], c='k', label='Cities')
+for i, (x, y) in enumerate(cities):
+    plt.text(x, y, str(i), fontsize=10)
+plt.title('Đường đi tối ưu của ACO và SOA')
+plt.xlabel('X')
+plt.ylabel('Y')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.tight_layout()
+plt.show()
+
+max_iter = max(len(aco_history), len(soa_history), len(ga_history), 100)  # Số vòng lặp hiển thị mong muốn
+
+def pad_history(history, length):
+    if len(history) < length:
+        return history + [history[-1]] * (length - len(history))
+    return history[:length]
+
+aco_history_padded = pad_history(aco_history, max_iter)
+soa_history_padded = pad_history(soa_history, max_iter)
+ga_history_padded  = pad_history(ga_history, max_iter)
+
+plt.figure(figsize=(8, 6))
+plt.plot(aco_history_padded, color='red', label='ACO', linewidth=2)
+plt.plot(soa_history_padded, color='blue', label='SOA', linewidth=2)
+plt.plot(ga_history_padded, color='green', label='GA', linewidth=2)
+plt.xlabel("Iteration")
+plt.ylabel("Best Feasible Solution")
+plt.title("So sánh sự hội tụ giữa: ACO, SOA, GA")
+plt.legend(fontsize=10)
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+def generate_convergence_chart():
+    max_iterations = max_iter
+    iterations = list(range(max_iterations))
+    datasets = [
+        {"label": "ACO", "data": aco_history_padded,
+         "borderColor": "rgba(255, 99, 132, 1)", "backgroundColor": "rgba(255, 99, 132, 0.2)", "fill": False, "tension": 0.1},
+        {"label": "SOA", "data": soa_history_padded,
+         "borderColor": "rgba(54, 162, 235, 1)", "backgroundColor": "rgba(54, 162, 235, 0.2)", "fill": False, "tension": 0.1},
+        {"label": "GA", "data": ga_history_padded,
+         "borderColor": "rgba(75,  192, 192, 1)", "backgroundColor": "rgba(75, 192, 192, 0.2)", "fill": False, "tension": 0.1}
+    ]
+    chart_config = {
+        "type": "line",
+        "data": {"labels": iterations, "datasets": datasets},
+        "options": {
+            "responsive": True,
+            "plugins": {"legend": {"display": True, "position": "top"},
+                        "title": {"display": True, "text": "Convergence Comparison: ACO, SOA, GA"}},
+            "scales": {
+                "x": {"type": "linear", "display": True, "title": {"display": True, "text": "Iteration"}},
+                "y": {"display": True, "title": {"display": True, "text": "Best Feasible Solution"}, "ticks": {"autoSkip": True}}
+            }
+        }
+    }
+    return chart_config
+
+chart_json = generate_convergence_chart()
+with open("convergence_chart.json", "w") as f:
+    json.dump(chart_json, f, indent=2)
+# -----------------------
+# Hiển thị bảng chi tiết từng vòng lặp
+# -----------------------
+print("\nChi tiết từng vòng lặp (Chiều dài đường đi tốt nhất):")
+headers = ["Vòng lặp", "ACO", "SOA", "GA"]
+table_data = []
+
+for i in range(max_iter):
+    aco_val = aco_history_padded[i]
+    soa_val = soa_history_padded[i]
+    ga_val = ga_history_padded[i]
+    table_data.append([i + 1, f"{aco_val:.4f}", f"{soa_val:.4f}", f"{ga_val:.4f}"])
+
+print(tabulate(table_data, headers=headers, tablefmt="grid"))
